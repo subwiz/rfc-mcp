@@ -47,7 +47,7 @@ client = None
 class SearchRequest(BaseModel):
     query: str
     limit: int = Field(default=5, ge=1, le=20)
-    
+
 class SearchResult(BaseModel):
     file_name: str
     text: str
@@ -61,18 +61,18 @@ class MCPMessage(BaseModel):
 async def startup_event():
     """Initialize Qdrant client and embedding model on startup"""
     global model, client
-    
+
     # Initialize embedding model
     logger.info(f"Loading embedding model: {MODEL_NAME}")
     model = SentenceTransformer(MODEL_NAME)
-    
+
     # Initialize Qdrant client
     logger.info(f"Connecting to Qdrant at {QDRANT_URL}")
     client = qdrant_client.QdrantClient(
         url=QDRANT_URL,
         api_key=QDRANT_API_KEY if QDRANT_API_KEY else None
     )
-    
+
     # Verify collection exists
     try:
         collections = client.get_collections().collections
@@ -103,7 +103,7 @@ async def mcp_websocket(websocket: WebSocket):
     """WebSocket endpoint implementing the Model Context Protocol for Claude Desktop"""
     await websocket.accept()
     logger.info("WebSocket connection established")
-    
+
     try:
         # Send MCP hello message per protocol specification
         await websocket.send_json({
@@ -114,7 +114,7 @@ async def mcp_websocket(websocket: WebSocket):
                 "description": "Search through document embeddings stored in Qdrant"
             }
         })
-        
+
         # Main communication loop
         async for message in websocket.iter_json():
             try:
@@ -122,27 +122,27 @@ async def mcp_websocket(websocket: WebSocket):
                 msg_type = message.get("type")
                 msg_data = message.get("data", {})
                 logger.info(f"Received message type: {msg_type}")
-                
+
                 # Handle message based on type
                 if msg_type == "ping":
                     await websocket.send_json({"type": "pong", "data": {}})
-                
+
                 elif msg_type == "search":
                     # Extract search parameters
                     query = msg_data.get("query")
                     limit = min(msg_data.get("limit", DEFAULT_LIMIT), 20)  # Cap at 20 for performance
-                    
+
                     if not query:
                         await websocket.send_json({
                             "type": "error",
                             "data": {"message": "Search query cannot be empty"}
                         })
                         continue
-                    
+
                     # Perform search
                     logger.info(f"Searching for: '{query}' with limit {limit}")
                     results = await search_documents(query, limit)
-                    
+
                     # Send search results
                     await websocket.send_json({
                         "type": "search_results",
@@ -152,34 +152,34 @@ async def mcp_websocket(websocket: WebSocket):
                             "total": len(results)
                         }
                     })
-                
+
                 elif msg_type == "error":
                     logger.error(f"Received error from client: {msg_data}")
-                
+
                 else:
                     logger.warning(f"Unknown message type: {msg_type}")
                     await websocket.send_json({
                         "type": "error",
                         "data": {"message": f"Unknown message type: {msg_type}"}
                     })
-            
+
             except json.JSONDecodeError:
                 logger.error("Failed to parse WebSocket message as JSON")
                 await websocket.send_json({
                     "type": "error",
                     "data": {"message": "Invalid JSON message"}
                 })
-            
+
             except Exception as e:
                 logger.exception("Error processing message")
                 await websocket.send_json({
                     "type": "error",
                     "data": {"message": f"Error processing message: {str(e)}"}
                 })
-    
+
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
-    
+
     except Exception as e:
         logger.exception("WebSocket error")
         try:
@@ -190,32 +190,40 @@ async def mcp_websocket(websocket: WebSocket):
 async def search_documents(query: str, limit: int = 5) -> List[SearchResult]:
     """
     Search for documents in Qdrant based on semantic similarity
+
+    This function is compatible with qdrant-client version 1.14.2
     """
     if not model or not client:
         raise RuntimeError("Search services not initialized")
-    
+
     # Generate embedding for the query
     query_embedding = model.encode(query).tolist()
-    
-    # Search in Qdrant
-    search_results = client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=models.Query(
-            vector=query_embedding,
+
+    # For qdrant-client 1.14.2, we should use the search method with these parameters
+    try:
+        logger.info(f"Searching with query vector length: {len(query_embedding)}")
+        search_results = client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_embedding,
             limit=limit
         )
-    )
-    
-    # Format results
-    results = []
-    for result in search_results:
-        results.append(SearchResult(
-            file_name=result.payload.get("file_name", "unknown"),
-            text=result.payload.get("text", ""),
-            similarity_score=float(result.score)
-        ))
-    
-    return results
+
+        # Format results
+        results = []
+        for result in search_results:
+            results.append(SearchResult(
+                file_name=result.payload.get("file_name", "unknown"),
+                text=result.payload.get("text", ""),
+                similarity_score=float(result.score)
+            ))
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}", exc_info=True)
+        # More detailed error information to help debug
+        logger.error(f"Parameters: collection_name={COLLECTION_NAME}, vector_size={len(query_embedding)}, limit={limit}")
+        raise RuntimeError(f"Search failed: {str(e)}")
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
