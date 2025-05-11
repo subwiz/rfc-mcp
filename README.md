@@ -1,6 +1,6 @@
 # RFC MCP
 
-This is a weekend project to create a simple RAG application that stores embeddings of text documents using Qdrant and a Claude MCP.
+This is a weekend project to create a simple RAG application that stores embeddings of text documents using Qdrant, and a MCP server to query this Vector Database, and a MCP client using Claude to interact.
 
 ## Steps
 
